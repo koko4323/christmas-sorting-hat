@@ -8,6 +8,7 @@ import json
 import os
 
 AGE_GROUPS = ["低年級", "中年級", "高年級", "國中以上"]
+STATE_FILE = "sorting_hat_state.json"
 
 st.set_page_config(page_title="聖誕節分類帽系統", layout="wide")
 
@@ -24,125 +25,127 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-STATE_FILE = "sorting_hat_state.json"
+# ========= 狀態持久化（存到 JSON 檔） =========
 
-def save_state_to_file():
-    """將目前狀態寫入本地 JSON 檔，避免重整後遺失。"""
+def save_state():
+    """把目前狀態寫進 JSON 檔，避免重整後消失。"""
+    data = {
+        "theme": st.session_state.theme,
+        "team_count": st.session_state.team_count,
+        "team_size": st.session_state.team_size,
+        "require_name": st.session_state.require_name,
+        "balance_age": st.session_state.balance_age,
+        "team_names": get_current_team_names(),
+        "students": st.session_state.students,
+    }
     try:
-        data = {
-            "theme": st.session_state.get("theme"),
-            "team_count": st.session_state.get("team_count"),
-            "team_size": st.session_state.get("team_size"),
-            "team_names": st.session_state.get("team_names", []),
-            "balance_age": st.session_state.get("balance_age", True),
-            "require_name": st.session_state.get("require_name", True),
-            "students": st.session_state.get("students", []),
-        }
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        # 在雲端環境有可能寫入失敗，但不影響主要功能
-        st.warning(f"儲存狀態時發生問題：{e}")
+    except Exception:
+        # 檔案寫不出去就先忽略，不影響當前遊戲
+        pass
 
-def load_state_from_file():
-    """從本地 JSON 檔載入狀態（如果存在）。"""
+
+def load_state():
+    """從 JSON 檔讀取狀態，回傳 dict 或 None。"""
     if not os.path.exists(STATE_FILE):
         return None
-
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data
+            return json.load(f)
     except Exception:
         return None
 
-def rebuild_teams_from_students():
-    """根據 team_names 與 students 重新建立 teams 結構。"""
-    team_names = st.session_state.get("team_names", [])
-    team_count = st.session_state.get("team_count", len(team_names) or 3)
-    if not team_names or len(team_names) < team_count:
-        # 補齊隊名
-        team_names = [
-            team_names[i] if i < len(team_names) and team_names[i]
-            else f"第{i+1}隊"
-            for i in range(team_count)
-        ]
-        st.session_state.team_names = team_names
-    teams = [{"name": name, "members": []} for name in team_names]
 
-    name_to_team = {t["name"]: t for t in teams}
+def rebuild_teams_from_students(team_names):
+    """依照 team_names + students 重建各隊成員。"""
+    team_count = len(team_names)
+    st.session_state.teams = [{"name": team_names[i], "members": []} for i in range(team_count)]
+    name_to_team = {t["name"]: t for t in st.session_state.teams}
+
     for stu in st.session_state.students:
-        team_name = stu.get("team")
-        if team_name in name_to_team:
-            name_to_team[team_name]["members"].append(
-                {"name": stu.get("name", "這位勇者"), "age_group": stu.get("age_group", AGE_GROUPS[0])}
-            )
-    st.session_state.teams = teams
+        tname = stu.get("team")
+        team = name_to_team.get(tname)
+        if team is None:
+            continue
+        team["members"].append(
+            {"name": stu["name"], "age_group": stu["age_group"]}
+        )
+
+
+def ensure_team_name_keys():
+    """確保每一隊都有對應的 team_name_i widget key。"""
+    for i in range(st.session_state.team_count):
+        key = f"team_name_{i}"
+        if key not in st.session_state:
+            # 給一個預設：如果有舊名單就用舊的，否則用「第X隊」
+            if "team_names" in st.session_state and i < len(st.session_state.team_names):
+                st.session_state[key] = st.session_state.team_names[i]
+            else:
+                st.session_state[key] = f"第 {i+1} 隊"
+
+
+def get_current_team_names():
+    """從各個 team_name_i widget 把目前隊名抓出來。"""
+    names = []
+    for i in range(st.session_state.team_count):
+        key = f"team_name_{i}"
+        val = st.session_state.get(key, f"第 {i+1} 隊")
+        name = val.strip() or f"第 {i+1} 隊"
+        names.append(name)
+    # 也同步存一份在 session_state 方便外面用
+    st.session_state.team_names = names
+    return names
+
+# ========= 初始化狀態 =========
 
 def init_state():
     if "initialized" in st.session_state:
         return
 
-    st.session_state.initialized = True
     # 預設值
     st.session_state.theme = "聖誕節分類帽分組系統"
     st.session_state.team_count = 3
     st.session_state.team_size = 100
-    st.session_state.team_names = ["麋鹿隊", "雪人隊", "聖誕樹隊"]
-    st.session_state.balance_age = True
     st.session_state.require_name = True
+    st.session_state.balance_age = True
     st.session_state.students = []
     st.session_state.teams = []
     st.session_state.last_assignment = None
+    st.session_state.team_names = ["麋鹿隊", "雪人隊", "聖誕樹隊"]
 
-    # 讀取已存狀態（如果有）
-    data = load_state_from_file()
+    # 先嘗試從檔案載入
+    data = load_state()
     if data:
         st.session_state.theme = data.get("theme", st.session_state.theme)
-        st.session_state.team_count = data.get("team_count", st.session_state.team_count)
-        st.session_state.team_size = data.get("team_size", st.session_state.team_size)
+        st.session_state.team_count = int(data.get("team_count", st.session_state.team_count))
+        st.session_state.team_size = int(data.get("team_size", st.session_state.team_size))
+        st.session_state.require_name = bool(data.get("require_name", st.session_state.require_name))
+        st.session_state.balance_age = bool(data.get("balance_age", st.session_state.balance_age))
+        st.session_state.students = data.get("students", [])
         st.session_state.team_names = data.get("team_names", st.session_state.team_names)
-        st.session_state.balance_age = data.get("balance_age", st.session_state.balance_age)
-        st.session_state.require_name = data.get("require_name", st.session_state.require_name)
-        st.session_state.students = data.get("students", st.session_state.students)
 
-    # 依目前設定重建隊伍
-    rebuild_teams_from_students()
+        # 防止隊伍數量與隊名長度不一致
+        if st.session_state.team_count < len(st.session_state.team_names):
+            st.session_state.team_names = st.session_state.team_names[: st.session_state.team_count]
+        elif st.session_state.team_count > len(st.session_state.team_names):
+            for i in range(len(st.session_state.team_names), st.session_state.team_count):
+                st.session_state.team_names.append(f"第 {i+1} 隊")
 
-def get_team_names_from_inputs():
-    """從老師後台的每隊輸入欄位取得隊名。"""
-    names = []
-    for i in range(st.session_state.team_count):
-        key = f"team_name_{i}"
-        val = st.session_state.get(key, "").strip() if isinstance(st.session_state.get(key), str) else ""
-        if not val:
-            val = f"第{i+1}隊"
-        names.append(val)
-    st.session_state.team_names = names
-    return names
+        # 重建隊伍
+        rebuild_teams_from_students(st.session_state.team_names)
+    else:
+        # 沒有舊檔案就用預設隊伍並先存一份
+        rebuild_teams_from_students(st.session_state.team_names)
+        save_state()
 
-def reset_all(clear_students: bool = True):
-    """重新建立隊伍，必要時一併清空學生紀錄。"""
-    team_count = int(st.session_state.team_count)
-    team_size = int(st.session_state.team_size)
+    # 把隊名塞進 widget key
+    for i, name in enumerate(st.session_state.team_names):
+        st.session_state[f"team_name_{i}"] = name
 
-    if team_count <= 0 or team_size <= 0:
-        st.warning("隊伍數量與每隊上限人數必須大於 0。")
-        return
+    st.session_state.initialized = True
 
-    # 讀取目前輸入的隊名
-    names = get_team_names_from_inputs()
-
-    st.session_state.teams = [
-        {"name": names[i], "members": []}
-        for i in range(team_count)
-    ]
-
-    if clear_students:
-        st.session_state.students = []
-        st.session_state.last_assignment = None
-
-    save_state_to_file()
+# ========= 分配相關邏輯 =========
 
 def choose_team_for_student(age_group: str):
     """根據設定挑選適合的隊伍 index。"""
@@ -155,6 +158,7 @@ def choose_team_for_student(age_group: str):
     if all(len(t["members"]) >= max_size for t in teams):
         return None
 
+    # 不平均年齡時：只看總人數
     if not st.session_state.balance_age:
         candidates = []
         for idx, team in enumerate(teams):
@@ -168,6 +172,7 @@ def choose_team_for_student(age_group: str):
         candidates = [c for c in candidates if c[1] == min_total]
         return random.choice(candidates)[0]
 
+    # 有平均年齡時：先比該年齡層，再比總人數
     candidates = []
     for idx, team in enumerate(teams):
         if len(team["members"]) >= max_size:
@@ -187,6 +192,7 @@ def choose_team_for_student(age_group: str):
 
     return random.choice(candidates)[0]
 
+
 def update_student_team_summary():
     teams = st.session_state.teams
     try:
@@ -199,6 +205,7 @@ def update_student_team_summary():
         lines.append(f"{t['name']}：{len(t['members'])} / {max_size} 人")
     return "\n".join(lines)
 
+
 def build_log_csv():
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -207,7 +214,25 @@ def build_log_csv():
         writer.writerow([idx, stu["name"], stu["age_group"], stu["team"]])
     return buf.getvalue().encode("utf-8-sig")
 
+
+def reset_teams(clear_students: bool = True):
+    """依目前設定 + 隊名重建隊伍，可選擇是否清空學生。"""
+    team_count = int(st.session_state.team_count)
+    if team_count <= 0:
+        st.warning("隊伍數量必須大於 0。")
+        return
+    ensure_team_name_keys()
+    names = get_current_team_names()
+
+    st.session_state.teams = [{"name": names[i], "members": []} for i in range(team_count)]
+    if clear_students:
+        st.session_state.students = []
+        st.session_state.last_assignment = None
+
+    save_state()
+
 # ========= 主程式開始 =========
+
 init_state()
 
 st.title("🎄 聖誕節分類帽系統（Streamlit 版）")
@@ -228,6 +253,7 @@ with tab_student:
 
         if st.button("🎩 分類！", key="sort_button"):
             raw_name = name.strip()
+
             if st.session_state.require_name and not raw_name:
                 st.warning("老師有設定需要填姓名喔～請先輸入姓名再按分類。")
             else:
@@ -259,25 +285,27 @@ with tab_student:
                         "team": team["name"],
                     }
 
+                    # 放大顯示結果（提高對比＋顯示隊名）
                     placeholder.markdown(
                         f"""
                         <div style="
                             text-align: center;
                             padding: 40px 20px;
                             border-radius: 20px;
-                            border: 4px solid #ff4b4b;
-                            background-color: #ffecec;
+                            border: 4px solid #FFD700;
+                            background-color: #202437;
+                            color: #FFFFFF;
                             margin-top: 20px;
                         ">
                             <h1 style="font-size: 3.2rem; margin-bottom: 20px;">{display_name}</h1>
                             <h2 style="font-size: 2.4rem; margin-bottom: 10px;">你被分到…… 🎉</h2>
-                            <h1 style="font-size: 4rem; color: #d60000;"></h1>
+                            <h1 style="font-size: 4rem; color: #FFE066;"></h1>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
-                    save_state_to_file()
+                    save_state()
 
     with col_right:
         st.markdown("#### 分類結果顯示區")
@@ -325,20 +353,15 @@ with tab_teacher:
             step=1,
         )
 
-    # 依隊伍數顯示多個隊名輸入欄位
-    st.markdown("#### 隊伍名稱設定")
-    team_name_cols = st.columns(2)
+    # 確保隊名欄位存在
+    ensure_team_name_keys()
+
+    st.markdown("#### 隊伍名稱設定（一隊一欄位）")
     for i in range(st.session_state.team_count):
-        col = team_name_cols[i % 2]
-        default_name = (
-            st.session_state.team_names[i]
-            if i < len(st.session_state.team_names)
-            else f"第{i+1}隊"
-        )
-        col.text_input(
+        key = f"team_name_{i}"
+        st.text_input(
             f"第 {i+1} 隊名稱",
-            value=default_name,
-            key=f"team_name_{i}",
+            key=key,
         )
 
     st.session_state.balance_age = st.checkbox(
@@ -356,7 +379,7 @@ with tab_teacher:
 
     with col_btn1:
         if st.button("套用設定並重設隊伍（清空分配）"):
-            reset_all(clear_students=True)
+            reset_teams(clear_students=True)
             st.success("已依照目前設定重設隊伍並清空分配紀錄。")
 
     with col_btn2:
@@ -373,51 +396,57 @@ with tab_teacher:
 
     st.markdown("---")
 
-    # 手動分配區塊
-    st.markdown("### 手動分配學生到指定隊伍")
-    mcol1, mcol2, mcol3, mcol4 = st.columns([2, 1.5, 1.5, 1])
-    with mcol1:
-        manual_name = st.text_input("學生姓名（可留白）", key="manual_name")
-    with mcol2:
-        manual_age = st.selectbox(
-            "年齡級距",
-            AGE_GROUPS,
-            key="manual_age",
-        )
-    with mcol3:
-        team_options = [t["name"] for t in st.session_state.teams] or ["尚未建立隊伍"]
-        manual_team = st.selectbox("指定隊伍", team_options, key="manual_team")
-    with mcol4:
-        if st.button("手動加入", key="manual_assign_button"):
-            if not st.session_state.teams:
-                st.warning("尚未建立任何隊伍，無法手動分配。")
-            else:
-                display_name = manual_name.strip() or "這位勇者"
-                # 找到隊伍
-                target_index = None
-                for idx, t in enumerate(st.session_state.teams):
-                    if t["name"] == manual_team:
-                        target_index = idx
-                        break
-                if target_index is None:
-                    st.error("找不到指定的隊伍。")
+    # ===== 手動分配到特定隊伍 =====
+    st.markdown("### 手動分配到指定隊伍")
+
+    if not st.session_state.teams:
+        st.info("目前尚未建立任何隊伍。")
+    else:
+        col_manual1, col_manual2 = st.columns(2)
+
+        with col_manual1:
+            manual_name = st.text_input("學生姓名（可留白）", key="manual_name")
+            manual_age = st.selectbox("年齡級距（手動分配）", AGE_GROUPS, key="manual_age")
+
+        with col_manual2:
+            team_options = [t["name"] for t in st.session_state.teams]
+            manual_team = st.selectbox("指定隊伍", team_options, key="manual_team")
+
+            if st.button("加入指定隊伍", key="manual_assign_btn"):
+                raw_name = manual_name.strip()
+                if st.session_state.require_name and not raw_name:
+                    st.warning("目前設定為必填姓名，請輸入學生姓名。")
                 else:
-                    team = st.session_state.teams[target_index]
-                    member = {"name": display_name, "age_group": manual_age}
-                    team["members"].append(member)
-                    st.session_state.students.append(
-                        {
+                    display_name = raw_name if raw_name else "這位勇者"
+
+                    max_size = int(st.session_state.team_size)
+                    target = None
+                    for t in st.session_state.teams:
+                        if t["name"] == manual_team:
+                            target = t
+                            break
+
+                    if target is None:
+                        st.error("找不到指定的隊伍。")
+                    elif len(target["members"]) >= max_size:
+                        st.warning("這個隊伍已達上限人數，請選擇其他隊伍或調整上限。")
+                    else:
+                        target["members"].append(
+                            {"name": display_name, "age_group": manual_age}
+                        )
+                        st.session_state.students.append(
+                            {
+                                "name": display_name,
+                                "age_group": manual_age,
+                                "team": manual_team,
+                            }
+                        )
+                        st.session_state.last_assignment = {
                             "name": display_name,
-                            "age_group": manual_age,
-                            "team": team["name"],
+                            "team": manual_team,
                         }
-                    )
-                    st.session_state.last_assignment = {
-                        "name": display_name,
-                        "team": team["name"],
-                    }
-                    save_state_to_file()
-                    st.success(f"{display_name} 已被手動加入。")
+                        save_state()
+                        st.success(f"{display_name} 已加入 ")
 
     st.markdown("---")
 
